@@ -192,6 +192,162 @@ run_mcmc.nuts <- function(iter, fn, gr, init, warmup=floor(iter/2),
               warmup=warmup/thin, max_treedepth=max_td))
 }
 
+## Modified version to return metrics for a single NUTS trajectory. Very
+## hacked apart.
+run_mcmc.nuts.test <- function(iter, fn, gr, init, warmup=floor(iter/2),
+                          chain, thin=1, control=NULL, r0){
+  ## Now contains all required NUTS arguments
+  control <- update_control(control)
+  eps <- control$stepsize
+  metric <- control$metric
+  init <- as.vector(unlist(init))
+  if(is.matrix(metric)){
+    covar <- metric
+  } else {
+    covar <- NULL#stop("Only allowed to pass covar matrix as metric")
+  }
+  max_td <- control$max_treedepth
+  adapt_delta <- control$adapt_delta
+  ## Using a mass matrix means redefining what fn and gr do and
+  ## backtransforming the initial value.
+  if(!is.null(covar)){
+    temp <- rotate_space(fn=fn, gr=gr, M=covar, theta.cur=init)
+    fn2 <- temp$fn2; gr2 <- temp$gr2
+    theta.cur <- temp$theta.cur
+    chd <- temp$chd
+  } else {
+    fn2 <- fn; gr2 <- gr
+    theta.cur <- init
+  }
+  sampler_params <- matrix(numeric(0), nrow=iter, ncol=6,
+                           dimnames=list(NULL, c("accept_stat__", "stepsize__", "treedepth__",
+                                                 "n_leapfrog__", "divergent__", "energy__")))
+  theta.out <- matrix(NA, nrow=iter, ncol=length(theta.cur))
+  ## how many steps were taken at each iteration, useful for tuning
+  j.results <- lp <- rep(NA, len=iter)
+  useDA <- is.null(eps)               # whether to use DA algorithm
+  if(useDA){
+    epsvec <- Hbar <- epsbar <- rep(NA, length=warmup+1)
+    eps <- epsvec[1] <- epsbar[1] <-
+      .find.epsilon(theta=theta.cur, fn=fn2, gr=gr2, eps=.1, verbose=FALSE)
+    mu <- log(10*eps)
+    Hbar[1] <- 0; gamma <- 0.05; t0 <- 10; kappa <- 0.75
+  } else {
+    ## dummy values to return
+    epsvec <- epsbar <- Hbar <- NULL
+  }
+  ## Start of MCMC chain
+  time.start <- Sys.time()
+  message('')
+  message(paste('Starting NUTS at', time.start))
+  for(m in 1:iter){
+    ## Initialize this iteration from previous in case divergence at first
+    ## treebuilding. If successful trajectory they are overwritten
+    theta.out[m,] <- theta.minus <- theta.plus <- theta.cur
+    lp[m] <- if(m==1) fn2(theta.cur) else lp[m-1]
+    r.cur <- r.plus <- r.minus <- r0# rnorm(length(theta.cur),0,1)
+    H0 <- .calculate.H(theta=theta.cur, r=r.cur, fn=fn2)
+    ## Draw a slice variable u
+    u <- .sample.u(theta=theta.cur, r=r.cur, fn=fn2)
+    u <- exp(H0)/2
+    j <- 0; n <- 1; s <- 1; divergent <- 0
+    ## Track steps and divergences; updated inside .buildtree
+    info <- as.environment(
+      list(n.calls=0, divergent=0, thetaminus=theta.cur,
+           thetaplus=theta.cur, rplus=r.cur, rminus=r.cur, out=NULL))
+    out2 <- NULL
+    while(s==1) {
+      v <- 1#sample(x=c(1,-1), size=1)
+      if(v==1){
+        ## move in right direction
+        res <- .buildtree(theta=theta.plus, r=r.plus, u=u, v=v,
+                          j=j, eps=eps, H0=H0,
+                          fn=fn2, gr=gr2, info=info)
+        theta.plus <- res$theta.plus
+        r.plus <- res$r.plus
+      } else {
+        ## move in left direction
+        res <- .buildtree(theta=theta.minus, r=r.minus, u=u, v=v,
+                          j=j, eps=eps, H0=H0,
+                          fn=fn2, gr=gr2, info=info)
+        theta.minus <- res$theta.minus
+        r.minus <- res$r.minus
+      }
+      ## test whether to accept this state
+      if(!is.finite(res$s)) res$s <- 0
+      if(res$s==1) {
+        if(runif(n=1, min=0,max=1) <= res$n/n){
+          theta.cur <- theta.out[m,] <- res$theta.prime
+          lp[m] <- fn2(theta.cur)
+        }
+      }
+      b <- .test.nuts(theta.plus, theta.minus, r.plus, r.minus)
+      s <- as.vector(res$s*b)
+      out2 <- rbind(out2, c(j, v, res$theta.prime, theta.cur, res$n/n, info$divergent,
+                s, n, res$n))
+      n <- n+res$n
+      if(!is.finite(s)) s <- 0
+      j <- j+1
+      ## Stop doubling if too many or it's diverged enough
+      if(j>=max_td) {
+        ## warning("j larger than max_treedepth, skipping to next m")
+        break
+      }
+    }
+    j.results[m] <- j-1
+
+    alpha2 <- res$alpha/res$nalpha
+    if(!is.finite(alpha2)) alpha2 <- 0
+    ## Do the adapting of eps.
+    if(useDA){
+      if(m <= warmup){
+        ## Adaptation during warmup:
+        Hbar[m+1] <- (1-1/(m+t0))*Hbar[m] +
+          (adapt_delta-alpha2)/(m+t0)
+        ## If logalpha not defined, skip this updating step and use
+        ## the last one.
+        ## if(is.nan(Hbar[m+1])) Hbar[m+1] <- abs(Hbar[m])
+        logeps <- mu-sqrt(m)*Hbar[m+1]/gamma
+        epsvec[m+1] <- exp(logeps)
+        logepsbar <- m^(-kappa)*logeps + (1-m^(-kappa))*log(epsbar[m])
+        epsbar[m+1] <- exp(logepsbar)
+        eps <- epsvec[m+1]
+      } else {
+        ## Fix eps for sampling period
+        eps <- epsbar[warmup]
+      }
+    }
+    ## Do the adaptation of M
+
+
+    ## Save adaptation info.
+    sampler_params[m,] <-
+      c(alpha2, eps, j, info$n.calls, info$divergent, fn2(theta.cur))
+    if(m==warmup) time.warmup <- difftime(Sys.time(), time.start, units='secs')
+    .print.mcmc.progress(m, iter, warmup, chain)
+  } ## end of MCMC loop
+  ## Back transform parameters if covar is used
+  if(!is.null(covar)) {
+    theta.out <- t(apply(theta.out, 1, function(x) chd %*% x))
+  }
+  theta.out <- cbind(theta.out, lp)
+  theta.out <- theta.out[seq(1, nrow(theta.out), by=thin),]
+  sampler_params <- sampler_params[seq(1, nrow(sampler_params), by=thin),]
+  ##ndiv <- sum(sampler_params[-(1:warmup),5])
+  ## if(ndiv>0)
+  ##   message(paste0("There were ", ndiv, " divergent transitions after warmup"))
+  ## msg <- paste0("Final acceptance ratio=", sprintf("%.2f", mean(sampler_params[-(1:warmup),1])))
+  ## if(useDA) msg <- paste0(msg,", and target=", adapt_delta)
+  ## message(msg)
+  ## if(useDA) message(paste0("Final step size=", round(eps, 3),
+  ##                          "; after ", warmup, " warmup iterations"))
+  time.total <- difftime(Sys.time(), time.start, units='secs')
+  ## .print.mcmc.timing(time.warmup=time.warmup, time.total=time.total)
+  return(list(par=theta.out, sampler_params=sampler_params,
+              time.total=time.total, time.warmup=time.warmup,
+              warmup=warmup/thin, max_treedepth=max_td, out=info$out, out2=out2))
+}
+
 #' Draw a slice sample for given position and momentum variables
 .sample.u <- function(theta, r, fn)
   runif(n=1, min=0, max=exp(.calculate.H(theta=theta,r=r, fn=fn)))
@@ -225,10 +381,6 @@ run_mcmc.nuts <- function(iter, fn, gr, init, warmup=floor(iter/2),
 .buildtree <- function(theta, r, u, v, j, eps, H0, fn, gr,
                        delta.max=1000, info = environment() ){
   if(j==0){
-    ## ## Useful code for debugging. Returns entire path to global env.
-    ## if(!exists('theta.trajectory'))
-    ##   theta.trajectory <<- data.frame(step=0, t(theta))
-    ## base case, take one step in direction v
     r <- r+(v*eps/2)*gr(theta)
     theta <- theta+(v*eps)*r
     r <- r+(v*eps/2)*gr(theta)
@@ -244,6 +396,17 @@ run_mcmc.nuts <- function(iter, fn, gr, init, warmup=floor(iter/2),
     logalpha <- H-H0
     alpha <- min(exp(logalpha),1)
     info$n.calls <- info$n.calls + 1
+    info$thetaprime <- theta
+    if(v==1){
+      info$rplus <- r
+      info$thetaplus <- theta
+    } else {
+      info$rminus <- r
+      info$thetaminus <- theta
+    }
+    out <- c(theta, info$thetaminus, info$thetaplus, info$rminus, info$rplus, alpha, info$divergent,
+             info$n.calls, v, n, log(u))
+    info$out <- rbind(info$out, out)
     ## theta.trajectory <<-
     ##   rbind(theta.trajectory, data.frame(step=tail(theta.trajectory$step,1),t(theta)))
     return(list(theta.minus=theta, theta.plus=theta, theta.prime=theta, r.minus=r,
