@@ -251,12 +251,15 @@ run_mcmc.nuts.test <- function(iter, fn, gr, init, warmup=floor(iter/2),
     u <- exp(H0)/2
     j <- 0; n <- 1; s <- 1; divergent <- 0
     ## Track steps and divergences; updated inside .buildtree
+    out <- c(theta.cur, theta.minus, theta.plus, r.minus, r.plus, 0, 0,
+                        0, 0, 0, log(u))
     info <- as.environment(
       list(n.calls=0, divergent=0, thetaminus=theta.cur,
-           thetaplus=theta.cur, rplus=r.cur, rminus=r.cur, out=NULL))
+           thetaplus=theta.cur, rplus=r.cur, rminus=r.cur, out=out))
     out2 <- NULL
     while(s==1) {
-      v <- 1#sample(x=c(1,-1), size=1)
+      #v <- sample(x=c(1,-1), size=1)
+      v <- ifelse(j%%2==0, 1,-1)
       if(v==1){
         ## move in right direction
         res <- .buildtree(theta=theta.plus, r=r.plus, u=u, v=v,
@@ -362,6 +365,7 @@ run_mcmc.nuts.test <- function(iter, fn, gr, init, warmup=floor(iter/2),
   theta.temp <- theta.plus-theta.minus
   res <- (crossprod(theta.temp,r.minus) >= 0) *
     (crossprod(theta.temp, r.plus) >= 0)
+  ## print(paste("stop test:", theta.minus[1], theta.minus[2], theta.plus[1], theta.plus[2], res))
   return(res)
 }
 
@@ -396,13 +400,11 @@ run_mcmc.nuts.test <- function(iter, fn, gr, init, warmup=floor(iter/2),
     alpha <- min(exp(logalpha),1)
     info$n.calls <- info$n.calls + 1
     info$thetaprime <- theta
-    if(v==1){
       info$rplus <- r
       info$thetaplus <- theta
-    } else {
       info$rminus <- r
       info$thetaminus <- theta
-    }
+
     out <- c(theta, info$thetaminus, info$thetaplus, info$rminus, info$rplus, alpha, info$divergent,
              info$n.calls, v, n, log(u))
     info$out <- rbind(info$out, out)
