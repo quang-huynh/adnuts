@@ -2,9 +2,9 @@
 % Please edit documentation in R/helper.R
 \name{extract_samples}
 \alias{extract_samples}
-\title{Extract posterior samples from a TMB MCMC fit list.}
+\title{Extract posterior samples from a model fit.}
 \usage{
-extract_samples(fit, inc_warmup = FALSE, inc_lp = FALSE)
+extract_samples(fit, inc_warmup = FALSE, inc_lp = FALSE, as.list = FALSE)
 }
 \arguments{
 \item{fit}{A list returned by \code{sample_tmb} or \code{sample_admb}.}
@@ -13,15 +13,28 @@ extract_samples(fit, inc_warmup = FALSE, inc_lp = FALSE)
 (default). Warmup samples should never be used for inference, but may
 be useful for diagnostics.}
 
-\item{inc_lp}{Whether to drop the column of log posterior density (last
-column). For diagnostics it should be included.}
+\item{inc_lp}{Whether to include a column for the log posterior density
+(last column). For diagnostics it can be useful.}
+
+\item{as.list}{Whether to return the samples as a list (one element per
+chain). This could then be converted to a CODA mcmc object.}
 }
 \value{
-An invisible data.frame containing samples (rows) of each
-  parameter (columns). If multiple chains exist they will be rbinded
-  together.
+If as.list is FALSE, an invisible data.frame containing samples
+  (rows) of each parameter (columns). If multiple chains exist they will
+  be rbinded together, maintaining order within each chain. If as.list
+  is TRUE, samples are returned as a list of matrices.
 }
 \description{
-Extract posterior samples from a TMB MCMC fit list.
+A helper function to extract posterior samples across multiple chains
+into a single data.frame.
 }
-
+\details{
+This function is loosely based on the \pkg{rstan} function
+  \code{extract}. Merging samples across chains should only be used for
+  inference after appropriate diagnostic checks. Do not calculate
+  diagnostics like Rhat or effective sample size after using this
+  function, instead, use \code{\link[rstan]{monitor}}. Likewise, warmup
+  samples are not valid and should never be used for inference, but may
+  be useful in some cases for diagnosing issues.
+}

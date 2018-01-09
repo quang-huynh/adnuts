@@ -2,15 +2,16 @@
 % Please edit documentation in R/helper.R
 \name{launch_shinyadmb}
 \alias{launch_shinyadmb}
-\title{A high level wrapper to launch shinystan for a ADMB fit.}
+\title{Launch shinystan for an ADMB fit.}
 \usage{
 launch_shinyadmb(fit)
 }
+\arguments{
+\item{fit}{A named list returned by \code{sample_admb}.}
+}
 \description{
-A high level wrapper to launch shinystan for a ADMB fit.
+Launch shinystan for an ADMB fit.
 }
-\details{
-This function simply calls
-  \code{launch_shinystan(as.shinystan.tmb(tmb.fit))}.
+\seealso{
+\code{launch_shinytmb}
 }
-
